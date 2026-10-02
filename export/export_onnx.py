@@ -67,6 +67,13 @@ def export_half(path, path_half):
 
 
 def main():
+    # onnxruntime uploads usage telemetry from a background thread. If a reply arrives
+    # while the process is exiting, that thread locks a mutex the main thread has already
+    # destroyed and Python aborts with "recursive_mutex lock failed" -- after everything
+    # below has finished, so the files are fine, but the exit is ugly and nothing here
+    # needs the telemetry.
+    onnxruntime.disable_telemetry_events()
+
     torch.manual_seed(0)
     os.makedirs(OUT_DIR, exist_ok=True)
 
