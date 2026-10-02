@@ -1,0 +1,9 @@
+__pycache__
+.venv
+data/
+*.pth
+*.onnx
+*.nes
+node_modules
+.DS_Store
+.claude

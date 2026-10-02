@@ -1,0 +1,8 @@
+torch==2.14.1
+numpy==2.5.3
+stable-retro==1.0.1
+pygame-ce==2.5.8
+onnx==1.23.1
+onnxruntime==1.30.0
+onnxscript==0.7.2
+onnxconverter-common==1.16.0
