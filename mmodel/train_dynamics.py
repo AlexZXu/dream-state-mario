@@ -83,6 +83,14 @@ def evaluate(ema, val_loader, device):
     return sum(losses) / len(losses)
 
 
+def batches(loader):
+    # One pass over the data is about 20k batches, fewer than STEPS, so the loader is
+    # walked again (reshuffled) for as long as the training loop keeps asking.
+    while (True):
+        for batch in loader:
+            yield batch
+
+
 def main():
     device = get_device()
     print(f"training on {device}")
@@ -93,7 +101,6 @@ def main():
 
     train_loader = DataLoader(train_dset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-    assert STEPS <= len(train_loader)
 
     props = make_props()
     denoiser = Denoiser(props).to(device)
@@ -115,7 +122,7 @@ def main():
     running_loss = 0.0
     start = time.time()
 
-    for step, batch in enumerate(train_loader):
+    for step, batch in enumerate(batches(train_loader)):
         if (step == STEPS):
             break
 

@@ -3,6 +3,7 @@ from vmodel.train_tokenizer import get_device, CHECKPOINT
 from envs.smb import load
 from envs.smb_frames import split
 from envs.smb_sequences import LATENTS, LATENT_STATS
+import os
 import time
 
 import numpy as np
@@ -29,11 +30,22 @@ def main():
     # The posterior mean is stored, not a sample: the dynamics model should learn to
     # predict what the frame is, and the decoder was already trained to put up with the
     # noise. float16 keeps 737k latents at 10.6 GB.
-    latents = np.lib.format.open_memmap(LATENTS, mode="w+", dtype=np.float16, shape=(N, C, 28, 32))
+    if (os.path.exists(LATENTS)):
+        latents = np.load(LATENTS, mmap_mode="r+")
+        assert latents.shape == (N, C, 28, 32)
+    else:
+        latents = np.lib.format.open_memmap(LATENTS, mode="w+", dtype=np.float16, shape=(N, C, 28, 32))
 
     start = time.time()
 
     for i in range(0, N, BATCH_SIZE):
+        # The first run was killed 70% of the way through, so the script picks up where
+        # one left off. The file starts as zeros and a real latent is never all zero, so
+        # a batch with no zero rows is already done. Delete the file to force a re-encode,
+        # which is needed whenever the tokenizer is retrained.
+        if (np.asarray(latents[i:i + BATCH_SIZE]).any(axis=(1, 2, 3)).all()):
+            continue
+
         batch = torch.from_numpy(np.asarray(frames[i:i + BATCH_SIZE])).long().to(device)
         mu, logvar = tokenizer.encode(colorize(batch, palette))
 
