@@ -5,12 +5,13 @@ import torch.nn.functional as F
 FRAME_H = 224  # the NES draws 240 rows; the top and bottom 8 are overscan and get cropped
 FRAME_W = 256
 DOWNSAMPLE = 8  # 256x224 frame -> 32x28 latent
+NUM_COLORS = 64  # the NES master palette; every pixel of a frame is one of these
 
 
 class TokenizerProps:
     def __init__(self, args: dict = {}):
         self.in_channels = args.get("in_channels", 3)
-        self.out_channels = args.get("out_channels", 3)
+        self.out_channels = args.get("out_channels", NUM_COLORS)
         self.latent_channels = args.get("latent_channels", 8)
 
         self.enc_channels = args.get("enc_channels", (64, 128, 256))
@@ -142,3 +143,40 @@ class Tokenizer(nn.Module):
         X_recon = self.decode(z)
 
         return X_recon, mu, logvar
+
+
+def colorize(frame, palette):
+    # frame shape: (batch, h, w) int64 colour numbers; palette shape: (64, 3) in [0, 1]
+    # -> (batch, 3, h, w). The encoder is given real colours rather than 64 one-hot
+    # planes, so two shades of the same brick start out close together.
+    return palette[frame].permute(0, 3, 1, 2)
+
+
+def tokenizer_loss(logits, target, mu, logvar, kl_weight):
+    # logits shape: (batch, 64, h, w); target shape: (batch, h, w) colour numbers
+    batch_size = target.shape[0]
+
+    # A frame is pixel art drawn from 64 fixed colours, so reconstruction is a 64-way
+    # classification per pixel. A regression on RGB can answer with a blend of two
+    # colours, which is exactly what blur is; a classifier has to commit to one.
+    reconstruct_loss = F.cross_entropy(logits, target, reduction='sum') / batch_size
+
+    # KL(q(z|x) || N(0, I)). Both terms are summed over their dimensions and averaged
+    # over the batch, as in the CarRacing VAE, but the weight is tiny: the latent only has
+    # to stay on a bounded scale for the dynamics model, not be sampled from the prior.
+    kl_loss = 0.5 * torch.sum(mu**2 + torch.exp(logvar) - 1 - logvar) / batch_size
+
+    return reconstruct_loss + kl_weight * kl_loss, reconstruct_loss, kl_loss
+
+
+def pixel_accuracy(logits, target):
+    correct = (logits.argmax(dim=1) == target).float().cpu()
+    target = target.cpu()
+
+    # Most of a frame is flat sky or black, which any model gets right. The second number
+    # only counts pixels that are not the frame's most common colour, which is where
+    # Mario, the enemies, the coins and the HUD digits are.
+    background = torch.mode(target.flatten(1), dim=1).values[:, None, None]
+    foreground = (target != background).float()
+
+    return correct.mean().item(), ((correct * foreground).sum() / foreground.sum()).item()
