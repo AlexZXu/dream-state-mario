@@ -6,6 +6,10 @@ from envs.smb_frames import split
 from envs.smb import load
 from envs.mario import decode
 
+import copy
+import os
+import tempfile
+
 import numpy as np
 import torch
 
@@ -174,6 +178,73 @@ def check_training_step(props, dset):
     print("training step passed")
 
 
+def check_resume(props, dset):
+    # A run that is stopped and loaded again must be in exactly the state it was saved
+    # in: both sets of weights, Adam's moments and the place in the learning-rate schedule.
+    def build():
+        denoiser = Denoiser(props)
+        ema = copy.deepcopy(denoiser)
+        optimizer = torch.optim.AdamW(params=denoiser.parameters(), lr=1e-3)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: 1 / (1 + step))
+
+        return denoiser, ema, optimizer, scheduler
+
+    batch = torch.utils.data.default_collate([dset[i] for i in range(4)])
+    denoiser, ema, optimizer, scheduler = build()
+
+    def train_step(denoiser, optimizer, scheduler):
+        torch.manual_seed(1)
+        optimizer.zero_grad()
+        loss = train_dynamics.compute_loss(denoiser, batch, torch.device("cpu"))
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+    for _ in range(3):
+        train_step(denoiser, optimizer, scheduler)
+
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "dynamics.pth")
+        train_dynamics.save_state(path, props, denoiser, ema, optimizer, scheduler, 3)
+        assert os.listdir(folder) == ["dynamics.pth"]
+
+        other, other_ema, other_optimizer, other_scheduler = build()
+        step = train_dynamics.load_state(path, props, other, other_ema, other_optimizer, other_scheduler, torch.device("cpu"))
+
+        assert step == 3
+        assert other_scheduler.get_last_lr() == scheduler.get_last_lr()
+
+        for name, value in ema.state_dict().items():
+            assert torch.equal(value, other_ema.state_dict()[name])
+
+        # The step after the reload matches the step the first run would have taken, which
+        # only holds if Adam's moments came back too.
+        train_step(denoiser, optimizer, scheduler)
+        train_step(other, other_optimizer, other_scheduler)
+
+        for name, value in denoiser.state_dict().items():
+            assert torch.equal(value, other.state_dict()[name])
+
+        # The EMA-only file that load_denoiser reads is refused, and so is another width.
+        torch.save({"props": vars(props), "ema": ema.state_dict()}, path)
+        wider = DenoiserProps({"channels": (32, 64, 128), "num_groups": 8, "action_dim": FRAME_SKIP * 6})
+
+        for bad_props in (props, wider):
+            if (bad_props is wider):
+                train_dynamics.save_state(path, props, denoiser, ema, optimizer, scheduler, 4)
+
+            try:
+                train_dynamics.load_state(path, bad_props, other, other_ema, other_optimizer, other_scheduler, torch.device("cpu"))
+                assert False
+            except RuntimeError as error:
+                assert "different run" in str(error)
+
+        loaded = train_dynamics.load_denoiser(path, torch.device("cpu"))
+        assert not loaded.training
+
+    print("resume passed")
+
+
 def main():
     torch.manual_seed(0)
 
@@ -183,6 +254,7 @@ def main():
     check_sampler(props)
     dset = check_dataset()
     check_training_step(props, dset)
+    check_resume(props, dset)
 
     print("\nAll tests passed.")
 

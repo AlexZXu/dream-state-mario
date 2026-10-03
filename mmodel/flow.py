@@ -28,12 +28,16 @@ def flow_loss(velocity, z, eps):
 
 
 @torch.no_grad()
-def sample(denoiser, context, cond_inputs, num_steps, tau_ctx, eps=None):
+def sample(denoiser, context, cond_inputs, num_steps, tau_ctx, eps=None, guide=None, tau_guide=1.0):
     """One generated latent, (batch, C, h, w), from num_steps Euler steps.
 
     context arrives clean and is noised here to tau_ctx, so the model sees the same kind
     of slightly-off context it was trained on and does not trust its own previous
     outputs too literally.
+
+    guide is an optional latent to start from instead of pure noise: it is noised to
+    tau_guide and the walk begins there. At tau_guide = 1 nothing of it is left and this
+    is ordinary sampling; at 0 it comes back unchanged.
     """
     batch_size = context.shape[0]
     device = context.device
@@ -46,7 +50,13 @@ def sample(denoiser, context, cond_inputs, num_steps, tau_ctx, eps=None):
         eps = torch.randn(batch_size, denoiser.props.latent_channels, context.shape[-2], context.shape[-1], device=device)
 
     z = eps
-    taus = torch.linspace(1.0, 0.0, num_steps + 1, device=device)
+    tau_start = 1.0
+
+    if (guide is not None):
+        tau_start = tau_guide
+        z, _ = add_noise(guide, torch.full((batch_size,), tau_guide, device=device), eps)
+
+    taus = torch.linspace(tau_start, 0.0, num_steps + 1, device=device)
 
     for i in range(num_steps):
         tau = taus[i].expand(batch_size)

@@ -11,6 +11,7 @@ from PIL import Image
 NUM_ROLLOUTS = 16
 HORIZON = 100  # steps, 5 seconds
 REPORT_AT = [1, 2, 5, 10, 20, 40, 60, 100]
+NUM_SHOWN = 4  # rollouts drawn in the picture; one alone can land on a still scene
 OUT_DIR = "data/samples"
 
 
@@ -46,7 +47,7 @@ def main():
     generated = np.zeros((NUM_ROLLOUTS, HORIZON))
     frozen = np.zeros((NUM_ROLLOUTS, HORIZON))
     tokenizer = np.zeros((NUM_ROLLOUTS, HORIZON))
-    strip = None
+    strips = []
 
     for r, idx in enumerate(candidates):
         t = dreamer.seed(idx)
@@ -68,12 +69,12 @@ def main():
             frozen[r, h] = (last_context == real).mean()
             tokenizer[r, h] = (round_trip == real).mean()
 
-            if (r == 0 and h + 1 in REPORT_AT):
+            if (r < NUM_SHOWN and h + 1 in REPORT_AT):
                 real_row.append(dreamer.rgb(real))
                 dream_row.append(dreamer.rgb(dream))
 
-        if (r == 0):
-            strip = np.concatenate([np.concatenate(real_row, axis=1), np.concatenate(dream_row, axis=1)], axis=0)
+        if (r < NUM_SHOWN):
+            strips.append(np.concatenate([np.concatenate(real_row, axis=1), np.concatenate(dream_row, axis=1)], axis=0))
 
         print(f"rollout {r + 1}/{NUM_ROLLOUTS}  pixels exact after {HORIZON} steps: {generated[r, -1] * 100:.1f}%")
 
@@ -83,8 +84,8 @@ def main():
         print(f"{h:>6} {generated[:, h - 1].mean() * 100:>9.1f}% {frozen[:, h - 1].mean() * 100:>7.1f}% {tokenizer[:, h - 1].mean() * 100:>9.1f}%")
 
     os.makedirs(OUT_DIR, exist_ok=True)
-    Image.fromarray(strip.astype(np.uint8)).save(f"{OUT_DIR}/rollout.png")
-    print(f"\nsaved {OUT_DIR}/rollout.png  (top: real, bottom: generated, at steps {REPORT_AT})")
+    Image.fromarray(np.concatenate(strips, axis=0).astype(np.uint8)).save(f"{OUT_DIR}/rollout.png")
+    print(f"\nsaved {OUT_DIR}/rollout.png  ({NUM_SHOWN} rollouts, each real above generated, at steps {REPORT_AT})")
 
 if (__name__ == "__main__"):
     main()
