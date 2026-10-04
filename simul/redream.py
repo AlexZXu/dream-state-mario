@@ -10,6 +10,8 @@ import pygame
 
 TAU_GUIDE = 0.6  # how much of the simulation's frame is replaced by noise before the model redraws it
 TAU_STEP = 0.1
+TAU_HUD = 0.7  # the same for the HUD rows alone: a little more is left to the model there
+TAU_HUD_STEP = 0.05
 
 
 STILL_TAU = 0.4  # the most noise used while Mario stands still or has barely started moving
@@ -22,10 +24,11 @@ class Redream:
     so what is on screen is the model's output, with its own errors, but it cannot lose
     Mario or wander into another level the way it does on its own."""
 
-    def __init__(self, game, dreamer, tau_guide=TAU_GUIDE, anchor=False):
+    def __init__(self, game, dreamer, tau_guide=TAU_GUIDE, anchor=False, tau_hud=TAU_HUD):
         self.game = game
         self.dreamer = dreamer
         self.tau_guide = tau_guide
+        self.tau_hud = tau_hud
         self.anchor = anchor
 
         dreamer.use_state(True)
@@ -68,7 +71,13 @@ class Redream:
         tau_guide = min(self.tau_guide, STILL_TAU) if (still) else self.tau_guide
 
         self.dreamer.set_state(game.level, game.x, self.powerup())
-        dreamed = self.dreamer.step(action, guide=frame, tau_guide=tau_guide, anchor=(self.anchor or still))
+
+        # The score and clock are what a world model is worst at: it can copy a digit
+        # from the last frame but has nowhere to keep a running total. Handing it the
+        # simulation's HUD as firmly as the rest of the frame hides that, so the HUD
+        # rows get more noise. At 0.7 the digits are mostly right, sometimes stall or
+        # show a neighbour, and recover; by 0.8 the clock is rarely right.
+        dreamed = self.dreamer.step(action, guide=frame, tau_guide=tau_guide, anchor=(self.anchor or still), tau_hud=self.tau_hud)
 
         return frame, dreamed
 
@@ -80,7 +89,7 @@ def main():
 
     pygame.init()
     screen = pygame.display.set_mode((FRAME_W * SCALE, FRAME_H * SCALE))
-    pygame.display.set_caption("redream: arrows move, X jump, Z run, [ ] less/more model, H true history, D exact, N next level, R restart, esc quit")
+    pygame.display.set_caption("redream: arrows move, X jump, Z run, [ ] less/more model, - = less/more HUD drift, H true history, D exact, N next level, R restart, esc quit")
     clock = pygame.time.Clock()
 
     exact = False
@@ -109,6 +118,10 @@ def main():
                     # instead of its own, so each frame is a one-step prediction.
                     redream.anchor = not redream.anchor
                     print(f"true history {'on' if (redream.anchor) else 'off'}")
+                if (event.key in (pygame.K_MINUS, pygame.K_EQUALS)):
+                    change = TAU_HUD_STEP if (event.key == pygame.K_EQUALS) else -TAU_HUD_STEP
+                    redream.tau_hud = float(np.clip(redream.tau_hud + change, 0, 1))
+                    print(f"HUD noise {redream.tau_hud:.2f}  (at or below the guide noise the HUD is treated like the rest of the frame)")
                 if (event.key in (pygame.K_LEFTBRACKET, pygame.K_RIGHTBRACKET)):
                     change = TAU_STEP if (event.key == pygame.K_RIGHTBRACKET) else -TAU_STEP
                     redream.tau_guide = float(np.clip(redream.tau_guide + change, 0, 1))

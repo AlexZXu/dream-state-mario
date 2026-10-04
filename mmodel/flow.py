@@ -28,7 +28,7 @@ def flow_loss(velocity, z, eps):
 
 
 @torch.no_grad()
-def sample(denoiser, context, cond_inputs, num_steps, tau_ctx, eps=None, guide=None, tau_guide=1.0):
+def sample(denoiser, context, cond_inputs, num_steps, tau_ctx, eps=None, guide=None, tau_guide=1.0, loose=None, tau_loose=1.0):
     """One generated latent, (batch, C, h, w), from num_steps Euler steps.
 
     context arrives clean and is noised here to tau_ctx, so the model sees the same kind
@@ -38,6 +38,11 @@ def sample(denoiser, context, cond_inputs, num_steps, tau_ctx, eps=None, guide=N
     guide is an optional latent to start from instead of pure noise: it is noised to
     tau_guide and the walk begins there. At tau_guide = 1 nothing of it is left and this
     is ordinary sampling; at 0 it comes back unchanged.
+
+    loose is an optional mask, (batch, 1, h, w), of cells that follow the guide less
+    closely: they start from the noisier tau_loose. That costs one extra step, from
+    tau_loose down to tau_guide, during which the other cells are held on the guide's
+    path; from there every cell gets the same num_steps as without the mask.
     """
     batch_size = context.shape[0]
     device = context.device
@@ -53,16 +58,23 @@ def sample(denoiser, context, cond_inputs, num_steps, tau_ctx, eps=None, guide=N
     tau_start = 1.0
 
     if (guide is not None):
-        tau_start = tau_guide
-        z, _ = add_noise(guide, torch.full((batch_size,), tau_guide, device=device), eps)
+        tau_start = tau_guide if (loose is None) else max(tau_guide, tau_loose)
+        z, _ = add_noise(guide, torch.full((batch_size,), tau_start, device=device), eps)
 
-    taus = torch.linspace(tau_start, 0.0, num_steps + 1, device=device)
+    taus = torch.linspace(min(tau_start, tau_guide), 0.0, num_steps + 1, device=device)
 
-    for i in range(num_steps):
+    if (tau_start > tau_guide):
+        taus = torch.cat([torch.tensor([tau_start], device=device), taus])
+
+    for i in range(len(taus) - 1):
         tau = taus[i].expand(batch_size)
         cond = denoiser.conditioning(tau, tau_ctx, **cond_inputs)
 
         velocity = denoiser.denoise(z, context, cond)
         z = z - (taus[i] - taus[i + 1]) * velocity
+
+        if (loose is not None and taus[i + 1] >= tau_guide):
+            held, _ = add_noise(guide, taus[i + 1].expand(batch_size), eps)
+            z = torch.where(loose, z, held)
 
     return z

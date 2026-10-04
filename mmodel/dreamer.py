@@ -10,6 +10,7 @@ import torch
 
 NUM_STEPS = 4  # Euler steps per generated frame
 TAU_CTX = 0.1  # noise put on the context at play time, inside the range it was trained on
+HUD_CELLS = 3  # latent rows that hold the HUD: the top 24 pixels of the frame
 
 
 class Dreamer:
@@ -85,13 +86,14 @@ class Dreamer:
         self.state_mask = torch.full((1,), 1.0 if (on) else 0.0, device=self.device)
 
     @torch.no_grad()
-    def step(self, action, guide=None, tau_guide=1.0, anchor=False):
+    def step(self, action, guide=None, tau_guide=1.0, anchor=False, tau_hud=None):
         # action: (6,) buttons held for the whole step, or (18,) the three per-frame readings
         # guide: optional (224, 256) frame of what the step should roughly look like (the
         # simulation's frame). Generation starts from it noised to tau_guide instead of
         # from pure noise. With anchor, the guide and not the generated frame goes into
         # the context, so the next step is predicted from true history and errors cannot
-        # build up.
+        # build up. tau_hud, if given, is a higher noise level for the HUD rows alone, so
+        # the score and clock are left more to the model than the rest of the frame is.
         action = np.asarray(action, dtype=np.float32)
 
         if (action.shape[0] == 6):
@@ -109,10 +111,19 @@ class Dreamer:
 
         z_guide = None if (guide is None) else self.encode(guide)
 
-        if (z_guide is not None and tau_guide <= 0):
+        loose = None
+
+        if (z_guide is not None and tau_hud is not None and tau_hud > tau_guide):
+            loose = torch.zeros(1, 1, z_guide.shape[-2], z_guide.shape[-1], dtype=torch.bool, device=self.device)
+            loose[:, :, :HUD_CELLS] = True
+
+        if (z_guide is not None and tau_guide <= 0 and loose is None):
             z = z_guide
         else:
-            z = sample(self.denoiser, self.context, cond_inputs, self.num_steps, self.tau_ctx, guide=z_guide, tau_guide=tau_guide)
+            z = sample(
+                self.denoiser, self.context, cond_inputs, self.num_steps, self.tau_ctx,
+                guide=z_guide, tau_guide=tau_guide, loose=loose, tau_loose=tau_hud if (loose is not None) else 1.0
+            )
 
         remembered = z_guide if (anchor and z_guide is not None) else z
         self.context = torch.cat([self.context[:, 1:], remembered[:, None]], dim=1)
